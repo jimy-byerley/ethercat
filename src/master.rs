@@ -7,6 +7,7 @@ use std::{
     collections::HashMap,
     convert::TryFrom,
     ffi::CStr,
+    path::Path,
     fs::{File, OpenOptions},
     io,
     os::{raw::c_ulong, unix::io::AsRawFd},
@@ -24,12 +25,12 @@ macro_rules! ioctl {
 pub struct Master {
     file: File,
     map: Option<memmap::MmapMut>,
-    domains: HashMap<DomainIdx, DomainDataPlacement>,
+    domains: HashMap<usize, DomainDataPlacement>,
 }
 
 pub struct Domain<'m> {
     master: &'m Master,
-    idx: DomainIdx,
+    idx: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,13 +46,11 @@ impl Master {
 		This function has to be the first function an application has to call to use EtherCAT. The function takes the index of the master as its argument.
 		The first master has index 0, the n-th master has index n - 1. The number of masters has to be specified when loading the master module.
 	*/
-    pub fn open(idx: MasterIdx, access: MasterAccess) -> Result<Self> {
-        let devpath = format!("/dev/EtherCAT{}", idx);
-        log::debug!("Open EtherCAT Master {}", devpath);
+    pub fn open<P: AsRef<Path>>(path: P, access: MasterAccess) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(access == MasterAccess::ReadWrite)
-            .open(&devpath)?;
+            .open(path)?;
         let mut module_info = ec::ec_ioctl_module_t::default();
         let master = Master {
             file,
@@ -69,7 +68,7 @@ impl Master {
     }
 
     pub fn master_count() -> Result<usize> {
-        let master = Self::open(0, MasterAccess::ReadOnly)?;
+        let master = Self::open("/dev/EtherCAT0", MasterAccess::ReadOnly)?;
         let mut module_info = ec::ec_ioctl_module_t::default();
         ioctl!(master, ec::ioctl::MODULE, &mut module_info)?;
         Ok(module_info.master_count as usize)
@@ -93,24 +92,24 @@ impl Master {
 
 		This method allocates memory and should be called in non-realtime context before `self.activate()`.
     */
-    pub fn create_domain(&self) -> Result<DomainIdx> {
+    pub fn create_domain(&self) -> Result<usize> {
         Ok((ioctl!(self, ec::ioctl::CREATE_DOMAIN)? as usize).into())
     }
 
     /**
 		Return a helper to configure a domain
 	*/
-    pub const fn domain(&self, idx: DomainIdx) -> Domain {
+    pub const fn domain(&self, idx: usize) -> Domain {
         Domain::new(idx, self)
     }
 
     /**
 		Returns the domain's process data.
 
-		- In kernel context: If external memory was provided with ecrt_domain_external_memory(), the returned pointer will contain the address of that memory. Otherwise it will point to the internally allocated memory. In the latter case, this method may not be called before ecrt_master_activate().
-		- In userspace context: This method has to be called after ecrt_master_activate() to get the mapped domain process data memory.
+		- In kernel context: If external memory was provided with `ecrt_domain_external_memory()`, the returned pointer will contain the address of that memory. Otherwise it will point to the internally allocated memory. In the latter case, this method may not be called before `self.activate()`.
+		- In userspace context: This method has to be called after `self.activate()` to get the mapped domain process data memory.
     */
-    pub fn domain_data(&mut self, idx: DomainIdx) -> Result<&mut [u8]> {
+    pub fn domain_data(&mut self, idx: usize) -> Result<&mut [u8]> {
         let p = self
             .domain_data_placement(idx)
             .map_err(|_| Error::NoDomain)?;
@@ -121,11 +120,11 @@ impl Master {
     /**
 		Returns the current size and offset of the domain's process data. 
     */
-    fn domain_data_placement(&mut self, idx: DomainIdx) -> Result<DomainDataPlacement> {
+    fn domain_data_placement(&mut self, idx: usize) -> Result<DomainDataPlacement> {
         Ok(match self.domains.get(&idx) {
             None => {
                 let d_idx =
-                    c_ulong::try_from(idx).map_err(|_| Error::DomainIdx(usize::from(idx)))?;
+                    c_ulong::try_from(idx).map_err(|_| Error::DomainIdx(idx))?;
                 let offset = ioctl!(self, ec::ioctl::DOMAIN_OFFSET, d_idx)? as usize;
                 let size = ioctl!(self, ec::ioctl::DOMAIN_SIZE, d_idx)? as usize;
                 let meta_data = DomainDataPlacement { offset, size };
@@ -163,7 +162,7 @@ impl Master {
     /**
 		Deactivates the master.
 
-		Removes the bus configuration. All objects created by `ecrt_master_create_domain()`, `ecrt_master_slave_config()`, `ecrt_domain_data()`, `ecrt_slave_config_create_sdo_request()` and `ecrt_slave_config_create_voe_handler()` are freed, so pointers to them become invalid.
+		Removes the bus configuration. All objects created by `self.create_domain()`, `self.configure_slave()`, `self.domain_data()`, `slave.create_sdo_request()` and `slave.create_voe_handler()` are freed, so pointers to them become invalid.
 
 		This method should not be called in realtime context. 
 	*/
@@ -176,7 +175,7 @@ impl Master {
     }
 
     /**
-		Set interval between calls to ecrt_master_send().
+		Set interval between calls to `self.send()`.
 
 		This information helps the master to decide, how much data can be appended to a frame by the master state machine. When the master is configured with –enable-hrtimers, this is used to calculate the scheduling of the master thread.
     */
@@ -286,7 +285,7 @@ impl Master {
 
 		Tries to find the slave with the given ring position. The obtained information is stored in a structure. No memory is allocated on the heap in this function.
     */
-    pub fn get_slave_info(&self, position: SlavePos) -> Result<SlaveInfo> {
+    pub fn get_slave_info(&self, position: u16) -> Result<SlaveInfo> {
         let mut data = ec::ec_ioctl_slave_t::default();
         data.position = u16::from(position);
         ioctl!(self, ec::ioctl::SLAVE, &mut data)?;
@@ -361,7 +360,7 @@ impl Master {
         let slave_position = if data.slave_position == -1 {
             None
         } else {
-            Some(SlavePos::from(data.slave_position as u16))
+            Some(u16::from(data.slave_position as u16))
         };
         Ok(ConfigInfo {
             alias: data.alias,
@@ -392,7 +391,7 @@ impl Master {
     }
 
     /** retreive informations about a given SDO */
-    pub fn get_sdo(&mut self, slave_pos: SlavePos, sdo_pos: SdoPos) -> Result<SdoInfo> {
+    pub fn get_sdo(&mut self, slave_pos: u16, sdo_pos: SdoPos) -> Result<SdoInfo> {
         let mut sdo = ec::ec_ioctl_slave_sdo_t::default();
         sdo.slave_position = u16::from(slave_pos);
         sdo.sdo_position = u16::from(sdo_pos);
@@ -422,7 +421,7 @@ impl Master {
     /** retreive informations about a given SDO's entry */
     pub fn get_sdo_entry(
         &mut self,
-        slave_pos: SlavePos,
+        slave_pos: u16,
         addr: SdoEntryAddr,
     ) -> Result<SdoEntryInfo> {
         let mut entry = ec::ec_ioctl_slave_sdo_entry_t::default();
@@ -463,8 +462,8 @@ impl Master {
     */
     pub fn sdo_download<T>(
         &mut self,
-        position: SlavePos,
-        sdo_idx: SdoIdx,
+        position: u16,
+        sdo: SdoIdx,
         complete_access: bool,
         data: &T,
     ) -> Result<()>
@@ -479,8 +478,8 @@ impl Master {
 
         let mut data = ec::ec_ioctl_slave_sdo_download_t {
             slave_position: u16::from(position),
-            sdo_index: u16::from(sdo_idx.idx),
-            sdo_entry_subindex: u8::from(sdo_idx.sub_idx),
+            sdo_index: u16::from(sdo.idx),
+            sdo_entry_subindex: u8::from(sdo.sub_idx),
             complete_access: if complete_access { 1 } else { 0 },
             data_size: data.data_size() as u64,
             data: data_ptr,
@@ -496,14 +495,14 @@ impl Master {
     */
     pub fn sdo_upload<'t>(
         &self,
-        position: SlavePos,
-        sdo_idx: SdoIdx,
+        position: u16,
+        sdo: SdoIdx,
         #[allow(unused_variables)] complete_access: bool,
         target: &'t mut [u8],
     ) -> Result<&'t mut [u8]> {
-        let slave_position = u16::from(position);
-        let sdo_index = u16::from(sdo_idx.idx);
-        let sdo_entry_subindex = u8::from(sdo_idx.sub_idx);
+        let slave_position = position;
+        let sdo_index = u16::from(sdo.idx);
+        let sdo_entry_subindex = u8::from(sdo.sub_idx);
         let target_size = target.len() as u64;
         let data_size = 0;
         let abort_code = 0;
@@ -548,12 +547,12 @@ impl Master {
     */
     pub fn get_pdo(
         &mut self,
-        slave_pos: SlavePos,
+        slave_pos: u16,
         sync_index: SmIdx,
-        pdo_position: PdoPos,
+        pdo_position: u8,
     ) -> Result<PdoInfo> {
         let mut pdo = ec::ec_ioctl_slave_sync_pdo_t::default();
-        pdo.slave_position = u16::from(slave_pos);
+        pdo.slave_position = slave_pos;
         pdo.sync_index = u8::from(sync_index) as u32;
         pdo.pdo_pos = u8::from(pdo_position) as u32;
         ioctl!(self, ec::ioctl::SLAVE_SYNC_PDO, &mut pdo)?;
@@ -578,9 +577,9 @@ impl Master {
 	*/
     pub fn get_pdo_entry(
         &mut self,
-        slave_pos: SlavePos,
+        slave_pos: u16,
         sync_index: SmIdx,
-        pdo_pos: PdoPos,
+        pdo_pos: u8,
         entry_pos: PdoEntryPos,
     ) -> Result<PdoEntryInfo> {
         let mut entry = ec::ec_ioctl_slave_sync_pdo_entry_t::default();
@@ -605,13 +604,13 @@ impl Master {
 		
 		Fills a given ec_sync_info_t structure with the attributes of a sync manager. The \a pdos field of the return value is left empty. Use `self.get_pdo()` to get the PDO information.
     */
-    pub fn get_sync(&mut self, slave_pos: SlavePos, sm: SmIdx) -> Result<SmInfo> {
+    pub fn get_sync(&mut self, slave_pos: u16, sm: u8) -> Result<SmInfo> {
         let mut sync = ec::ec_ioctl_slave_sync_t::default();
-        sync.slave_position = u16::from(slave_pos);
-        sync.sync_index = u8::from(sm) as u32;
+        sync.slave_position = slave_pos;
+        sync.sync_index = sm as u32;
         ioctl!(self, ec::ioctl::SLAVE_SYNC, &mut sync)?;
         Ok(SmInfo {
-            idx: SmIdx::from(sync.sync_index as u8),
+            idx: sync.sync_index as u8,
             start_addr: sync.physical_start_address,
             default_size: sync.default_size,
             control_register: sync.control_register,
@@ -623,16 +622,16 @@ impl Master {
     /**
 		Request a slave to switch to a state of communication and resets the error flag.
     */
-    pub fn request_state(&mut self, slave_pos: SlavePos, state: AlState) -> Result<()> {
+    pub fn request_state(&mut self, slave_pos: u16, state: AlState) -> Result<()> {
         let mut data = ec::ec_ioctl_slave_state_t::default();
-        data.slave_position = u16::from(slave_pos);
+        data.slave_position = slave_pos;
         data.al_state = state as u8;
         ioctl!(self, ec::ioctl::SLAVE_STATE, &mut data)?;
         Ok(())
     }
 
     #[cfg(feature = "sncn")]
-    pub fn dict_upload(&mut self, slave_pos: SlavePos) -> Result<()> {
+    pub fn dict_upload(&mut self, slave_pos: u16) -> Result<()> {
         let mut data = ec::ec_ioctl_slave_dict_upload_t::default();
         data.slave_position = u16::from(slave_pos);
         ioctl!(self, ec::ioctl::SLAVE_DICT_UPLOAD, &mut data)?;
@@ -680,7 +679,7 @@ impl Master {
     /**
 		Queues the DC synchrony monitoring datagram for sending.
 
-		The datagram broadcast-reads all "System time difference" registers (0x092c) to get an upper estimation of the DC synchrony. The result can be checked with the ecrt_master_sync_monitor_process() method.
+		The datagram broadcast-reads all "System time difference" registers (0x092c) to get an upper estimation of the DC synchrony. The result can be checked with the `self.sync_monitor_process()` method.
 	*/
     pub fn sync_monitor_queue(&mut self) -> Result<()> {
         ioctl!(self, ec::ioctl::SYNC_MON_QUEUE)?;
@@ -719,7 +718,7 @@ impl Master {
         Ok(time)
     }
 
-    pub fn foe_read(&mut self, idx: SlavePos, name: &str) -> Result<Vec<u8>> {
+    pub fn foe_read(&mut self, idx: u16, name: &str) -> Result<Vec<u8>> {
         let file_name = convert::string_to_foe_name(name)?;
         // FIXME: this is the same as in the c-implementation. Should read in chunks instead of a
         // fixed size buffer. The ioctl-call in the master pre-allocates a 10000 byte buffer, so we
@@ -741,7 +740,7 @@ impl Master {
         Ok(buf)
     }
 
-    pub fn foe_write(&mut self, idx: SlavePos, name: &str, data: &[u8]) -> Result<()> {
+    pub fn foe_write(&mut self, idx: u16, name: &str, data: &[u8]) -> Result<()> {
         let file_name = convert::string_to_foe_name(name)?;
 
         let buffer = data.as_ptr() as *mut _;
@@ -803,11 +802,11 @@ impl<'m> SlaveConfig<'m> {
         self.config_sync_manager(&sm_cfg)?;
         self.clear_pdo_assignments(sm_cfg.idx)?;
         for pdo_cfg in &*pdo_cfgs {
-            self.add_pdo_assignment(sm_cfg.idx, pdo_cfg.idx)?;
+            self.add_pdo_assignment(u8::from(sm_cfg.idx), u16::from(pdo_cfg.idx))?;
             if !pdo_cfg.entries.is_empty() {
-                self.clear_pdo_mapping(pdo_cfg.idx)?;
+                self.clear_pdo_mapping(u16::from(pdo_cfg.idx))?;
                 for entry in &pdo_cfg.entries {
-                    self.add_pdo_mapping(pdo_cfg.idx, entry)?;
+                    self.add_pdo_mapping(u16::from(pdo_cfg.idx), entry)?;
                 }
             }
         }
@@ -862,21 +861,21 @@ impl<'m> SlaveConfig<'m> {
 
 		This can be called before assigning PDOs via `self.add_pdo_assignment()`, to clear the default assignment of a sync manager.
     */
-    pub fn clear_pdo_assignments(&mut self, sync_idx: SmIdx) -> Result<()> {
+    pub fn clear_pdo_assignments(&mut self, sync_idx: u8) -> Result<()> {
         let mut data = ec::ec_ioctl_config_pdo_t::default();
         data.config_index = self.idx;
-        data.sync_index = u8::from(sync_idx);
+        data.sync_index = sync_idx;
         ioctl!(self.master, ec::ioctl::SC_CLEAR_PDOS, &data).map(|_| ())
     }
 
 	/**
 		Add a PDO entry to the given PDO's mapping. 
 	*/
-    pub fn add_pdo_assignment(&mut self, sync_idx: SmIdx, pdo_idx: PdoIdx) -> Result<()> {
+    pub fn add_pdo_assignment(&mut self, sync_idx: u8, pdo_idx: u16) -> Result<()> {
         let mut data = ec::ec_ioctl_config_pdo_t::default();
         data.config_index = self.idx;
-        data.sync_index = u8::from(sync_idx);
-        data.index = u16::from(pdo_idx);
+        data.sync_index = sync_idx;
+        data.index = pdo_idx;
         ioctl!(self.master, ec::ioctl::SC_ADD_PDO, &data).map(|_| ())
     }
 
@@ -885,7 +884,7 @@ impl<'m> SlaveConfig<'m> {
 
 		This can be called before mapping PDO entries via `self.add_pdo_mapping()`, to clear the default mapping.
     */
-    pub fn clear_pdo_mapping(&mut self, pdo_idx: PdoIdx) -> Result<()> {
+    pub fn clear_pdo_mapping(&mut self, pdo_idx: u16) -> Result<()> {
         let mut data = ec::ec_ioctl_config_pdo_t::default();
         data.config_index = self.idx;
         data.index = u16::from(pdo_idx);
@@ -895,7 +894,7 @@ impl<'m> SlaveConfig<'m> {
     /**
 		Add a PDO entry to the given PDO's mapping.
     */
-    pub fn add_pdo_mapping(&mut self, pdo_index: PdoIdx, entry: &PdoEntryInfo) -> Result<()> {
+    pub fn add_pdo_mapping(&mut self, pdo_index: u16, entry: &PdoEntryInfo) -> Result<()> {
         let data = ec::ec_ioctl_add_pdo_entry_t {
             config_index: self.idx,
             pdo_index: u16::from(pdo_index),
@@ -911,7 +910,7 @@ impl<'m> SlaveConfig<'m> {
 
 		Searches the assigned PDOs for the given PDO entry. An error is raised, if the given entry is not mapped. Otherwise, the corresponding sync manager and FMMU configurations are provided for slave configuration and the respective sync manager's assigned PDOs are appended to the given domain, if not already done. The offset of the requested PDO entry's data inside the domain's process data is returned. Optionally, the PDO entry bit position (0-7) can be retrieved via the bit_position output parameter. This pointer may be NULL, in this case an error is raised if the PDO entry does not byte-align.
     */
-    pub fn register_pdo_entry(&mut self, index: PdoEntryIdx, domain: DomainIdx) -> Result<Offset> {
+    pub fn register_pdo_entry(&mut self, index: PdoEntryIdx, domain: usize) -> Result<Offset> {
         let mut data = ec::ec_ioctl_reg_pdo_entry_t {
             config_index: self.idx,
             entry_index: u16::from(index.idx),
@@ -937,7 +936,7 @@ impl<'m> SlaveConfig<'m> {
         sync_index: SmIdx,
         pdo_pos: u32,
         entry_pos: u32,
-        domain: DomainIdx,
+        domain: usize,
     ) -> Result<Offset> {
         let mut data = ec::ec_ioctl_reg_pdo_pos_t {
             config_index: self.idx,
@@ -1122,7 +1121,7 @@ impl<'m> SlaveConfig<'m> {
 }
 
 impl<'m> Domain<'m> {
-    pub const fn new(idx: DomainIdx, master: &'m Master) -> Self {
+    pub const fn new(idx: usize, master: &'m Master) -> Self {
         Self { idx, master }
     }
 

@@ -78,16 +78,32 @@ impl SlaveAddr {
 
 #[derive(Debug, Clone)]
 pub struct MasterInfo {
+	/// Number of slaves in the bus. 
     pub slave_count: u32,
+    /// true, if the network link is up. 
     pub link_up: bool,
     pub scan_busy: bool,
+    /// Application time. 
     pub app_time: u64,
 }
 
 #[derive(Debug, Clone)]
 pub struct MasterState {
+	/// Sum of responding slaves on all Ethernet devices. 
     pub slaves_responding: u32,
+    /** Application-layer states of all slaves.
+
+	The states are coded in the lower 4 bits. If a bit is set, it means that at least one slave in the bus is in the corresponding state:
+
+	| Bit | State  |
+	|-----|--------|
+	| 0   | INIT   |
+	| 1   | PREOP  |
+	| 2   | SAFEOP |
+	| 3   | OP     |
+	*/
     pub al_states: u8,
+    /// true, if at least one Ethernet link is up. 
     pub link_up: bool,
 }
 
@@ -96,7 +112,7 @@ pub struct ConfigInfo {
     pub alias: u16,
     pub position: u16,
     pub id: SlaveId,
-    pub slave_position: Option<SlavePos>,
+    pub slave_position: Option<u16>,
     pub sdo_count: u32,
     pub idn_count: u32,
     // TODO: more attributes are returned:
@@ -198,7 +214,7 @@ pub enum WatchdogMode {
 /// Sync Manager Info
 #[derive(Debug, Copy, Clone)]
 pub struct SmInfo {
-    pub idx: SmIdx,
+    pub idx: u8,
     pub start_addr: u16,
     pub default_size: u16,
     pub control_register: u8,
@@ -209,20 +225,20 @@ pub struct SmInfo {
 /// Sync Manager Config
 #[derive(Debug, Clone, Copy)]
 pub struct SmCfg {
-    pub idx: SmIdx,
+    pub idx: u8,
     pub watchdog_mode: WatchdogMode,
     pub direction: SyncDirection,
 }
 
 impl SmCfg {
-    pub const fn input(idx: SmIdx) -> Self {
+    pub const fn input(idx: u8) -> Self {
         Self {
             idx,
             direction: SyncDirection::Input,
             watchdog_mode: WatchdogMode::Default,
         }
     }
-    pub const fn output(idx: SmIdx) -> Self {
+    pub const fn output(idx: u8) -> Self {
         Self {
             idx,
             direction: SyncDirection::Output,
@@ -278,8 +294,11 @@ impl SdoData for &'_ [u8] {
 
 #[derive(Debug, Clone)]
 pub struct DomainState {
+	/// Value of the last working counter. 
     pub working_counter: u32,
+    /// Working counter interpretation. 
     pub wc_state: WcState,
+    /// Redundant link is in use. 
     pub redundancy_active: bool,
 }
 
