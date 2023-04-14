@@ -32,7 +32,7 @@ impl From<Error> for io::Error {
     }
 }
 
-pub use ethercat_types::*;
+pub use ethercat_types::{SdoEntryAccess, SdoEntryAddr, Access, AlState, Offset, DataType};
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type MasterIdx = u32;
@@ -250,12 +250,12 @@ impl SmCfg {
 /// PDO Config
 #[derive(Debug, Clone)]
 pub struct PdoCfg {
-    pub idx: PdoIdx,
+    pub idx: u16,
     pub entries: Vec<PdoEntryInfo>,
 }
 
 impl PdoCfg {
-    pub const fn new(idx: PdoIdx) -> PdoCfg {
+    pub const fn new(idx: u16) -> PdoCfg {
         Self {
             idx,
             entries: vec![],
@@ -335,4 +335,102 @@ impl From<u32> for WcState {
             x => panic!("invalid state {}", x),
         }
     }
+}
+
+
+/** address of an SDO (Service Data Object)
+
+	An SDO is a variable on a slave that can be read/written through
+	
+	- the service objects dictionnary in asynchronous (non-realtime) mode
+	- the process data objects (PDO) in synchronous (realtime) mode
+*/
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Sdo {
+	/// index in the dictionnary
+	pub index: u16,
+	/// part of the SDO to access, can be `Sub(u8)` or `Complete`
+	pub sub: SdoItem,
+}
+/// designate a part or the whole of an SDO
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum SdoItem {
+	/// designate the subindex of an SDO item
+	Sub(u8),
+	/// designate the whole SDO
+	Complete,
+}
+impl Sdo {
+	/// fast hand to create a SDO address with complete access
+	pub fn complete(index: u16) -> Self  {
+		Self{index, sub: SdoItem::Complete}
+	}
+	/// fast hand to create a SDO address with sub item access
+	pub fn subitem(index: u16, sub:u8) -> Self {
+		Self{index, sub: SdoItem::Sub(sub)}
+	}
+}
+impl SdoItem {
+	pub fn unwrap(&self) -> u8 {
+		match self {
+			SdoItem::Sub(i) => *i,
+			SdoItem::Complete => 0,
+			}
+	}
+	pub fn is_complete(&self) -> bool {
+		match self {
+			SdoItem::Sub(_) => false,
+			SdoItem::Complete => true,
+		}
+	}
+}
+
+/// SDO Meta Information
+#[derive(Debug, Clone, PartialEq)]
+pub struct SdoInfo {
+    pub pos: u16, // TODO: do we need this info here?
+    /// SDO index in the object dictionnary
+    pub index: u16,
+    /// number of SDO entries (aka subitems)
+    pub entry_count: u8,
+    pub object_code: Option<u8>,
+    pub name: String,
+}
+/// SDO Entry Information
+#[derive(Debug, Clone, PartialEq)]
+pub struct SdoEntryInfo {
+	/// type of the data in this entry
+    pub data_type: DataType,
+    /// bit length of the entry data
+    pub bit_len: u16,
+    /// access type
+    pub access: SdoEntryAccess,
+    /// description of the entry, this value is unspecified and vendor-specific
+    pub description: String,
+}
+
+/// PDO Meta Information
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdoInfo {
+	/// index of the sync manager the PDO belongs to
+    pub sm: u8,
+    pub pos: u8,
+    /// index identifying the PDO
+    pub index: u16,
+    /// number of entries in the PDO, each entry is an SDO item
+    pub entry_count: u8,
+    /// description of the PDO, this value is unspecified and vendor-specific
+    pub name: String,
+}
+/// PDO entry information
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdoEntryInfo {
+	/// position in the mapping
+    pub pos: u8,
+    /// SDO mapped
+    pub entry: Sdo,
+    /// bit length of the mapped SDO data
+    pub bit_len: u8,
+    /// name of the SDO data
+    pub name: String,
 }

@@ -1,7 +1,6 @@
 use ethercat::{
-    AlState, DomainIdx as DomainIndex, Idx, Master, MasterAccess, Offset, PdoCfg, PdoEntryIdx,
-    PdoEntryIdx as PdoEntryIndex, PdoEntryInfo, PdoEntryPos, PdoIdx, SlaveAddr, SlaveId, SlavePos,
-    SmCfg, SubIdx,
+    AlState, Master, MasterAccess, Offset, 
+    PdoCfg, Sdo, SdoItem, PdoEntryInfo, SlaveAddr, SlaveId, SmCfg,
 };
 use std::{
     collections::HashMap,
@@ -19,12 +18,12 @@ pub fn main() -> Result<(), io::Error> {
     
     let (mut master, domain_idx, offsets) = init_master()?;
     for (s, o) in &offsets {
-        log::info!("PDO offsets of Slave {}:", u16::from(*s));
-        for (pdo, (bit_len, offset)) in o {
+        log::info!("PDO offsets of Slave {}:", *s);
+        for (sdo, (bit_len, offset)) in o {
             log::info!(
                 " - {:X}:{:X} - {:?}, bit length: {}",
-                u16::from(pdo.idx),
-                u8::from(pdo.sub_idx),
+                sdo.index,
+                sdo.sub.unwrap(),
                 offset,
                 bit_len
             );
@@ -55,68 +54,68 @@ pub fn init_master() -> Result<
 	(
 		Master,
 		usize,
-		HashMap<u16, HashMap<PdoEntryIndex, (BitLen, Offset)>>,
+		HashMap<u16, HashMap<Sdo, (BitLen, Offset)>>,
 	),
 	io::Error,
 > {
 	
 	let rx_pdos = vec![
 		PdoCfg {
-			idx: PdoIdx::from(0x1704),
+			idx: 0x1704,
 			entries: vec![
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x6040), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x6040, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "control".to_owned(),
-					pos: PdoEntryPos::from(0),
+					pos: 0,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x607a), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x607a, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "position".to_owned(),
-					pos: PdoEntryPos::from(1),
+					pos: 1,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60ff), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60ff, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "velocity".to_owned(),
-					pos: PdoEntryPos::from(2),
+					pos: 2,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x6071), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x6071, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "torque".to_owned(),
-					pos: PdoEntryPos::from(3),
+					pos: 3,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x6060), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x6060, sub: SdoItem::Sub(0)},
 					bit_len: 8,
 					name: "mode".to_owned(),
-					pos: PdoEntryPos::from(4),
+					pos: 4,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60b8), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60b8, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "touch".to_owned(),
-					pos: PdoEntryPos::from(5),
+					pos: 5,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x607f), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x607f, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "max velocity".to_owned(),
-					pos: PdoEntryPos::from(6),
+					pos: 6,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60e0), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60e0, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "positive torque limit".to_owned(),
-					pos: PdoEntryPos::from(7),
+					pos: 7,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60e1), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60e1, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "negative torque limit".to_owned(),
-					pos: PdoEntryPos::from(8),
+					pos: 8,
 					},
 				],
 			},
@@ -124,67 +123,67 @@ pub fn init_master() -> Result<
 		
 	let tx_pdos = vec![
 		PdoCfg {
-			idx: PdoIdx::from(0x1b04),
+			idx: 0x1b04,
 			entries: vec![
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x603f), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x603f, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "error".to_owned(),
-					pos: PdoEntryPos::from(0),
+					pos: 0,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x6041), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x6041, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "status".to_owned(),
-					pos: PdoEntryPos::from(1),
+					pos: 1,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x6064), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x6064, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "position".to_owned(),
-					pos: PdoEntryPos::from(2),
+					pos: 2,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x6077), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x6077, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "torque".to_owned(),
-					pos: PdoEntryPos::from(3),
+					pos: 3,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x6061), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x6061, sub: SdoItem::Sub(0)},
 					bit_len: 8,
 					name: "mode".to_owned(),
-					pos: PdoEntryPos::from(4),
+					pos: 4,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60b9), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60b9, sub: SdoItem::Sub(0)},
 					bit_len: 16,
 					name: "touch status".to_owned(),
-					pos: PdoEntryPos::from(5),
+					pos: 5,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60ba), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60ba, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "touch value 1".to_owned(),
-					pos: PdoEntryPos::from(6),
+					pos: 6,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60bc), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60bc, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "touch value 1".to_owned(),
-					pos: PdoEntryPos::from(7),
+					pos: 7,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x60fd), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x60fd, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "digital inputs".to_owned(),
-					pos: PdoEntryPos::from(8),
+					pos: 8,
 					},
 				PdoEntryInfo {
-					entry_idx: PdoEntryIdx {idx: Idx::from(0x606c), sub_idx: SubIdx::from(0)},
+					entry: Sdo {index: 0x606c, sub: SdoItem::Sub(0)},
 					bit_len: 32,
 					name: "velocity".to_owned(),
-					pos: PdoEntryPos::from(9),
+					pos: 9,
 					},
 				],
 			},
@@ -210,7 +209,7 @@ pub fn init_master() -> Result<
 		let mut config = master.configure_slave(
 				SlaveAddr::ByPos(slave_pos as u16), 
 				slave_info.id)?;
-		let mut entry_offsets: HashMap<PdoEntryIndex, (u8, Offset)> = HashMap::new();
+		let mut entry_offsets: HashMap<Sdo, (u8, Offset)> = HashMap::new();
 		
 		let sm = SmCfg::output(2.into());
 		config.config_sync_manager(&sm)?;
@@ -220,8 +219,8 @@ pub fn init_master() -> Result<
 			config.clear_pdo_mapping(u16::from(pdo.idx))?;
 			for entry in &pdo.entries {
 				config.add_pdo_mapping(u16::from(pdo.idx), entry)?;
-				let offset = config.register_pdo_entry(entry.entry_idx, domain_idx)?;
-				entry_offsets.insert(entry.entry_idx, (entry.bit_len, offset));
+				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
 			}
 		}
 		
@@ -233,8 +232,8 @@ pub fn init_master() -> Result<
 			config.clear_pdo_mapping(u16::from(pdo.idx))?;
 			for entry in &pdo.entries {
 				config.add_pdo_mapping(u16::from(pdo.idx), entry)?;
-				let offset = config.register_pdo_entry(entry.entry_idx, domain_idx)?;
-				entry_offsets.insert(entry.entry_idx, (entry.bit_len, offset));
+				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
 			}
 		}
 		
@@ -242,20 +241,20 @@ pub fn init_master() -> Result<
 // 			// Positions of RX PDO
 // 			log::info!("Positions in RX PDO 0x{:X}:", u16::from(pdo.idx));
 // 			for entry in &pdo.entries {
-// 				let offset = config.register_pdo_entry(entry.entry_idx, domain_idx)?;
-// 				log::info!("  {:?}    {:?} {:?}", entry.entry_idx, offset, entry_offsets[&entry.entry_idx]);
+// 				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+// 				log::info!("  {:?}    {:?} {:?}", entry.entry, offset, entry_offsets[&entry.entry]);
 // // 				log::info!("  {:?}  {}", offset, entry.name);
-// // 				entry_offsets.insert(entry.entry_idx, (entry.bit_len, offset));
+// // 				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
 // 			}
 // 		}
 // 		for pdo in &tx_pdos {
 // 			// Positions of TX PDO
 // 			log::info!("Positions in TX PDO 0x{:X}:", u16::from(pdo.idx));
 // 			for entry in &pdo.entries {
-// 				let offset = config.register_pdo_entry(entry.entry_idx, domain_idx)?;
-// 				log::info!("  {:?}    {:?} {:?}", entry.entry_idx, offset, entry_offsets[&entry.entry_idx]);
+// 				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+// 				log::info!("  {:?}    {:?} {:?}", entry.entry, offset, entry_offsets[&entry.entry]);
 // // 				log::info!("  {:?}  {}", offset, entry.name);
-// // 				entry_offsets.insert(entry.entry_idx, (entry.bit_len, offset));
+// // 				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
 // 			}
 // 		}
 

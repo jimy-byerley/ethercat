@@ -93,7 +93,7 @@ impl Master {
 		This method allocates memory and should be called in non-realtime context before `self.activate()`.
     */
     pub fn create_domain(&self) -> Result<usize> {
-        Ok((ioctl!(self, ec::ioctl::CREATE_DOMAIN)? as usize).into())
+        Ok(ioctl!(self, ec::ioctl::CREATE_DOMAIN)? as usize)
     }
 
     /**
@@ -391,7 +391,7 @@ impl Master {
     }
 
     /** retreive informations about a given SDO */
-    pub fn get_sdo(&mut self, slave_pos: u16, sdo_pos: SdoPos) -> Result<SdoInfo> {
+    pub fn get_sdo(&mut self, slave_pos: u16, sdo_pos: u16) -> Result<SdoInfo> {
         let mut sdo = ec::ec_ioctl_slave_sdo_t::default();
         sdo.slave_position = u16::from(slave_pos);
         sdo.sdo_position = u16::from(sdo_pos);
@@ -399,9 +399,9 @@ impl Master {
         #[cfg(feature = "sncn")]
         {
             Ok(SdoInfo {
-                pos: SdoPos::from(sdo.sdo_position),
-                idx: Idx::from(sdo.sdo_index),
-                max_sub_idx: SubIdx::from(sdo.max_subindex),
+                pos: u16::from(sdo.sdo_position),
+                idx: u16::from(sdo.sdo_index),
+                entry_count: u8::from(sdo.max_subindex),
                 object_code: Some(sdo.object_code),
                 name: c_array_to_string(sdo.name.as_ptr()),
             })
@@ -409,9 +409,9 @@ impl Master {
         #[cfg(not(feature = "sncn"))]
         {
             Ok(SdoInfo {
-                pos: SdoPos::from(sdo.sdo_position),
-                idx: Idx::from(sdo.sdo_index),
-                max_sub_idx: SubIdx::from(sdo.max_subindex),
+                pos: u16::from(sdo.sdo_position),
+                index: u16::from(sdo.sdo_index),
+                entry_count: u8::from(sdo.max_subindex),
                 object_code: None,
                 name: convert::c_array_to_string(sdo.name.as_ptr()),
             })
@@ -463,7 +463,7 @@ impl Master {
     pub fn sdo_download<T>(
         &mut self,
         position: u16,
-        sdo: SdoIdx,
+        sdo: Sdo,
         complete_access: bool,
         data: &T,
     ) -> Result<()>
@@ -478,8 +478,8 @@ impl Master {
 
         let mut data = ec::ec_ioctl_slave_sdo_download_t {
             slave_position: u16::from(position),
-            sdo_index: u16::from(sdo.idx),
-            sdo_entry_subindex: u8::from(sdo.sub_idx),
+            sdo_index: sdo.index,
+            sdo_entry_subindex: sdo.sub.unwrap(),
             complete_access: if complete_access { 1 } else { 0 },
             data_size: data.data_size() as u64,
             data: data_ptr,
@@ -495,38 +495,32 @@ impl Master {
     */
     pub fn sdo_upload<'t>(
         &self,
-        position: u16,
-        sdo: SdoIdx,
+        slave: u16,
+        sdo: Sdo,
         #[allow(unused_variables)] complete_access: bool,
         target: &'t mut [u8],
     ) -> Result<&'t mut [u8]> {
-        let slave_position = position;
-        let sdo_index = u16::from(sdo.idx);
-        let sdo_entry_subindex = u8::from(sdo.sub_idx);
-        let target_size = target.len() as u64;
-        let data_size = 0;
-        let abort_code = 0;
 
         #[cfg(not(feature = "sncn"))]
         let mut data = ec::ec_ioctl_slave_sdo_upload_t {
-            slave_position,
-            sdo_index,
-            sdo_entry_subindex,
-            target_size,
+            slave_position: slave,
+            sdo_index: sdo.index,
+            sdo_entry_subindex: sdo.sub.unwrap(),
+            target_size: target.len() as u64,
             target: target.as_mut_ptr(),
-            data_size,
-            abort_code,
+            data_size: 0,
+            abort_code: 0,
         };
 
         #[cfg(feature = "sncn")]
         let mut data = ec::ec_ioctl_slave_sdo_upload_t {
-            slave_position,
-            sdo_index,
-            sdo_entry_subindex,
-            target_size,
+            slave_position: slave,
+            sdo_index: sdo.index,
+            sdo_entry_subindex: sdo.sub.unwrap(),
+            target_size: target.len() as u64,
             target: target.as_mut_ptr(),
-            data_size,
-            abort_code,
+            data_size: 0,
+            abort_code: 0,
             complete_access: if complete_access { 1 } else { 0 },
         };
 
@@ -548,18 +542,20 @@ impl Master {
     pub fn get_pdo(
         &mut self,
         slave_pos: u16,
-        sync_index: SmIdx,
+        sync_index: u8,
         pdo_position: u8,
     ) -> Result<PdoInfo> {
-        let mut pdo = ec::ec_ioctl_slave_sync_pdo_t::default();
-        pdo.slave_position = slave_pos;
-        pdo.sync_index = u8::from(sync_index) as u32;
-        pdo.pdo_pos = u8::from(pdo_position) as u32;
+        let mut pdo = ec::ec_ioctl_slave_sync_pdo_t {
+			slave_position: slave_pos,
+			sync_index: sync_index as u32,
+			pdo_pos: pdo_position as u32,
+			.. Default::default()
+			};
         ioctl!(self, ec::ioctl::SLAVE_SYNC_PDO, &mut pdo)?;
         Ok(PdoInfo {
-            sm: SmIdx::from(pdo.sync_index as u8),
-            pos: PdoPos::from(pdo.pdo_pos as u8),
-            idx: Idx::from(pdo.index),
+            sm: pdo.sync_index as u8,
+            pos: pdo.pdo_pos as u8,
+            index: pdo.index,
             entry_count: pdo.entry_count,
             name: convert::c_array_to_string(pdo.name.as_ptr()),
         })
@@ -578,21 +574,23 @@ impl Master {
     pub fn get_pdo_entry(
         &mut self,
         slave_pos: u16,
-        sync_index: SmIdx,
+        sync_index: u8,
         pdo_pos: u8,
-        entry_pos: PdoEntryPos,
+        entry_pos: u8,
     ) -> Result<PdoEntryInfo> {
-        let mut entry = ec::ec_ioctl_slave_sync_pdo_entry_t::default();
-        entry.slave_position = u16::from(slave_pos);
-        entry.sync_index = u8::from(sync_index) as u32;
-        entry.pdo_pos = u8::from(pdo_pos) as u32;
-        entry.entry_pos = u8::from(entry_pos) as u32;
+        let mut entry = ec::ec_ioctl_slave_sync_pdo_entry_t {
+			slave_position: slave_pos,
+			sync_index: sync_index as u32,
+			pdo_pos: pdo_pos as u32,
+			entry_pos: entry_pos as u32,
+			.. Default::default()
+			};
         ioctl!(self, ec::ioctl::SLAVE_SYNC_PDO_ENTRY, &mut entry)?;
         Ok(PdoEntryInfo {
-            pos: PdoEntryPos::from(entry.pdo_pos as u8),
-            entry_idx: PdoEntryIdx {
-                idx: Idx::from(entry.index),
-                sub_idx: SubIdx::from(entry.subindex),
+            pos: entry.pdo_pos as u8,
+            entry: Sdo {
+                index: entry.index,
+                sub: SdoItem::Sub(entry.subindex),
             },
             bit_len: entry.bit_length,
             name: convert::c_array_to_string(entry.name.as_ptr()),
@@ -898,8 +896,8 @@ impl<'m> SlaveConfig<'m> {
         let data = ec::ec_ioctl_add_pdo_entry_t {
             config_index: self.idx,
             pdo_index: u16::from(pdo_index),
-            entry_index: u16::from(entry.entry_idx.idx),
-            entry_subindex: u8::from(entry.entry_idx.sub_idx),
+            entry_index: u16::from(entry.entry.index),
+            entry_subindex: u8::from(entry.entry.sub.unwrap()),
             entry_bit_length: entry.bit_len,
         };
         ioctl!(self.master, ec::ioctl::SC_ADD_ENTRY, &data).map(|_| ())
@@ -910,11 +908,11 @@ impl<'m> SlaveConfig<'m> {
 
 		Searches the assigned PDOs for the given PDO entry. An error is raised, if the given entry is not mapped. Otherwise, the corresponding sync manager and FMMU configurations are provided for slave configuration and the respective sync manager's assigned PDOs are appended to the given domain, if not already done. The offset of the requested PDO entry's data inside the domain's process data is returned. Optionally, the PDO entry bit position (0-7) can be retrieved via the bit_position output parameter. This pointer may be NULL, in this case an error is raised if the PDO entry does not byte-align.
     */
-    pub fn register_pdo_entry(&mut self, index: PdoEntryIdx, domain: usize) -> Result<Offset> {
+    pub fn register_pdo_entry(&mut self, index: Sdo, domain: usize) -> Result<Offset> {
         let mut data = ec::ec_ioctl_reg_pdo_entry_t {
             config_index: self.idx,
-            entry_index: u16::from(index.idx),
-            entry_subindex: u8::from(index.sub_idx),
+            entry_index: u16::from(index.index),
+            entry_subindex: u8::from(index.sub.unwrap()),
             domain_index: u32::try_from(domain)
                 .map_err(|_| Error::DomainIdx(usize::from(domain)))?,
             bit_position: 0,
@@ -933,7 +931,7 @@ impl<'m> SlaveConfig<'m> {
     */
     pub fn register_pdo_entry_by_position(
         &mut self,
-        sync_index: SmIdx,
+        sync_index: u8,
         pdo_pos: u32,
         entry_pos: u32,
         domain: usize,
@@ -988,35 +986,13 @@ impl<'m> SlaveConfig<'m> {
 		
 			The SDOs for PDO assignment (0x1C10 - 0x1C2F) and PDO mapping (0x1600 - 0x17FF and 0x1A00 - 0x1BFF) should not be configured with this function, because they are part of the slave configuration done by the master. Please use `ecrt_slave_config_pdos()` and friends instead.
 
-		This is the generic function for adding an SDO configuration. Please note that the this function does not do any endianness correction. If datatype-specific functions are needed (that automatically correct the endianness), have a look at `ecrt_slave_config_sdo8()`, `ecrt_slave_config_sdo16()` and `ecrt_slave_config_sdo32()`.
+		This is the generic function for adding an SDO configuration. Please note that the this function does not do any endianness correction.
     */
-    pub fn add_sdo<T>(&mut self, index: SdoIdx, data: &T) -> Result<()>
-    where
-        T: SdoData + ?Sized,
-    {
+    pub fn add_sdo(&mut self, sdo: Sdo, data: &[u8]) -> Result<()> {
         let data = ec::ec_ioctl_sc_sdo_t {
             config_index: self.idx,
-            index: u16::from(index.idx),
-            subindex: u8::from(index.sub_idx),
-            data: data.data_ptr(),
-            size: data.data_size() as u64,
-            complete_access: 0,
-        };
-        ioctl!(self.master, ec::ioctl::SC_SDO, &data).map(|_| ())
-    }
-
-    /**
-		Add configuration data for a complete SDO.
-
-		The SDO data are transferred via CompleteAccess. Data for the first subindex (0) have to be included.
-
-		See also `self.add_sdo()`.
-    */
-    pub fn add_complete_sdo(&mut self, index: SdoIdx, data: &[u8]) -> Result<()> {
-        let data = ec::ec_ioctl_sc_sdo_t {
-            config_index: self.idx,
-            index: u16::from(index.idx),
-            subindex: u8::from(index.sub_idx),
+            index: sdo.index,
+            subindex: sdo.sub.unwrap(),
             data: data.as_ptr(),
             size: data.len() as u64,
             complete_access: 1,
