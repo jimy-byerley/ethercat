@@ -32,7 +32,7 @@ impl From<Error> for io::Error {
     }
 }
 
-pub use ethercat_types::{SdoEntryAccess, SdoEntryAddr, Access, AlState, Offset, DataType};
+pub use ethercat_types::{SdoEntryAccess, Access, AlState, Offset, DataType};
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type MasterIdx = u32;
@@ -214,33 +214,36 @@ pub enum WatchdogMode {
 /// Sync Manager Info
 #[derive(Debug, Copy, Clone)]
 pub struct SmInfo {
-    pub idx: u8,
+	/// index of the SDO that configures the sync manager
+    pub index: u8,
     pub start_addr: u16,
     pub default_size: u16,
     pub control_register: u8,
     pub enable: bool,
+    /// number of PDO that can be set on this sync manager
     pub pdo_count: u8,
 }
 
 /// Sync Manager Config
 #[derive(Debug, Clone, Copy)]
 pub struct SmCfg {
-    pub idx: u8,
+	/// index of the sync manager on the slave
+    pub index: u8,
     pub watchdog_mode: WatchdogMode,
     pub direction: SyncDirection,
 }
 
 impl SmCfg {
-    pub const fn input(idx: u8) -> Self {
+    pub const fn input(index: u8) -> Self {
         Self {
-            idx,
+            index,
             direction: SyncDirection::Input,
             watchdog_mode: WatchdogMode::Default,
         }
     }
-    pub const fn output(idx: u8) -> Self {
+    pub const fn output(index: u8) -> Self {
         Self {
-            idx,
+            index,
             direction: SyncDirection::Output,
             watchdog_mode: WatchdogMode::Default,
         }
@@ -250,14 +253,16 @@ impl SmCfg {
 /// PDO Config
 #[derive(Debug, Clone)]
 pub struct PdoCfg {
-    pub idx: u16,
+	/// PDO index on the slave
+    pub index: u16,
+    /// entries defining the mapping of the PDO to SDO items
     pub entries: Vec<PdoEntryInfo>,
 }
 
 impl PdoCfg {
-    pub const fn new(idx: u16) -> PdoCfg {
+    pub const fn new(index: u16) -> PdoCfg {
         Self {
-            idx,
+            index,
             entries: vec![],
         }
     }
@@ -337,7 +342,12 @@ impl From<u32> for WcState {
     }
 }
 
-
+/// SDO Entry Address
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SdoEntryAddr {
+    ByPos(u16, u8),
+    ByIdx(Sdo),
+}
 /** address of an SDO (Service Data Object)
 
 	An SDO is a variable on a slave that can be read/written through

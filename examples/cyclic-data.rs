@@ -61,7 +61,7 @@ pub fn init_master() -> Result<
 	
 	let rx_pdos = vec![
 		PdoCfg {
-			idx: 0x1704,
+			index: 0x1704,
 			entries: vec![
 				PdoEntryInfo {
 					entry: Sdo {index: 0x6040, sub: SdoItem::Sub(0)},
@@ -123,7 +123,7 @@ pub fn init_master() -> Result<
 		
 	let tx_pdos = vec![
 		PdoCfg {
-			idx: 0x1b04,
+			index: 0x1b04,
 			entries: vec![
 				PdoEntryInfo {
 					entry: Sdo {index: 0x603f, sub: SdoItem::Sub(0)},
@@ -213,50 +213,50 @@ pub fn init_master() -> Result<
 		
 		let sm = SmCfg::output(2.into());
 		config.config_sync_manager(&sm)?;
-        config.clear_pdo_assignments(sm.idx)?;
+        config.clear_pdo_assignments(sm.index)?;
         for pdo in &rx_pdos {
-            config.add_pdo_assignment(u8::from(sm.idx), u16::from(pdo.idx))?;
-			config.clear_pdo_mapping(u16::from(pdo.idx))?;
+            config.add_pdo_assignment(sm.index, pdo.index)?;
+			config.clear_pdo_mapping(pdo.index)?;
 			for entry in &pdo.entries {
-				config.add_pdo_mapping(u16::from(pdo.idx), entry)?;
-				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
-				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
+				config.add_pdo_mapping(pdo.index, entry)?;
+// 				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+// 				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
 			}
 		}
 		
 		let sm = SmCfg::input(3.into());
 		config.config_sync_manager(&sm)?;
-        config.clear_pdo_assignments(sm.idx)?;
+        config.clear_pdo_assignments(sm.index)?;
         for pdo in &tx_pdos {
-            config.add_pdo_assignment(u8::from(sm.idx), u16::from(pdo.idx))?;
-			config.clear_pdo_mapping(u16::from(pdo.idx))?;
+            config.add_pdo_assignment(sm.index, pdo.index)?;
+			config.clear_pdo_mapping(pdo.index)?;
 			for entry in &pdo.entries {
-				config.add_pdo_mapping(u16::from(pdo.idx), entry)?;
-				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
-				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
+				config.add_pdo_mapping(pdo.index, entry)?;
+// 				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+// 				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
 			}
 		}
 		
-// 		for pdo in &rx_pdos {
-// 			// Positions of RX PDO
-// 			log::info!("Positions in RX PDO 0x{:X}:", u16::from(pdo.idx));
-// 			for entry in &pdo.entries {
-// 				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+		for pdo in &rx_pdos {
+			// Positions of RX PDO
+			log::info!("Positions in RX PDO 0x{:X}:", pdo.index);
+			for entry in &pdo.entries {
+				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
 // 				log::info!("  {:?}    {:?} {:?}", entry.entry, offset, entry_offsets[&entry.entry]);
-// // 				log::info!("  {:?}  {}", offset, entry.name);
-// // 				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
-// 			}
-// 		}
-// 		for pdo in &tx_pdos {
-// 			// Positions of TX PDO
-// 			log::info!("Positions in TX PDO 0x{:X}:", u16::from(pdo.idx));
-// 			for entry in &pdo.entries {
-// 				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
+				log::info!("  {:?}  {}", offset, entry.name);
+				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
+			}
+		}
+		for pdo in &tx_pdos {
+			// Positions of TX PDO
+			log::info!("Positions in TX PDO 0x{:X}:", pdo.index);
+			for entry in &pdo.entries {
+				let offset = config.register_pdo_entry(entry.entry, domain_idx)?;
 // 				log::info!("  {:?}    {:?} {:?}", entry.entry, offset, entry_offsets[&entry.entry]);
-// // 				log::info!("  {:?}  {}", offset, entry.name);
-// // 				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
-// 			}
-// 		}
+				log::info!("  {:?}  {}", offset, entry.name);
+				entry_offsets.insert(entry.entry, (entry.bit_len, offset));
+			}
+		}
 
 		let cfg_index = config.index();
 		let cfg_info = master.get_config_info(cfg_index)?;
