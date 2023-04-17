@@ -258,8 +258,7 @@ pub fn init_master() -> Result<
 			}
 		}
 
-		let cfg_index = config.index();
-		let cfg_info = master.get_config_info(cfg_index)?;
+		let cfg_info = config.info()?;
 		log::info!("Config info: {:#?}", cfg_info);
 		if cfg_info.slave_position.is_none() {
 			return Err(io::Error::new(

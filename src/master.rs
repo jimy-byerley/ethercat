@@ -335,6 +335,7 @@ impl Master {
 
     /**
 		Obtains a slave configuration.
+		A slave configuration allows configuring the slave's PDOs
 
 		Creates a slave configuration object for the given alias and position tuple and returns it. If a configuration with the same alias and position already exists, it will be re-used. In the latter case, the given vendor ID and product code are compared to the stored ones. On mismatch, an error message is raised and the function returns NULL.
 
@@ -347,33 +348,7 @@ impl Master {
 
 		If different slave configurations are pointing to the same slave during bus configuration, a warning is raised and only the first configuration is applied.
 
-		This method allocates memory and should be called in non-realtime context before ecrt_master_activate().
-    */
-    pub fn get_config_info(&self, index: SlaveConfigIdx) -> Result<ConfigInfo> {
-        let mut data = ec::ec_ioctl_config_t::default();
-        data.config_index = index;
-        ioctl!(self, ec::ioctl::CONFIG, &mut data)?;
-        let id = SlaveId {
-            vendor_id: data.vendor_id,
-            product_code: data.product_code,
-        };
-        let slave_position = if data.slave_position == -1 {
-            None
-        } else {
-            Some(u16::from(data.slave_position as u16))
-        };
-        Ok(ConfigInfo {
-            alias: data.alias,
-            position: data.position,
-            id,
-            slave_position,
-            sdo_count: data.sdo_count,
-            idn_count: data.idn_count,
-        })
-    }
-
-    /**
-		Create a helper and start configuring the slave's PDOs
+		This method allocates memory and should be called in non-realtime context before [Master::activate].
     */
     pub fn configure_slave(&mut self, addr: SlaveAddr, expected: SlaveId) -> Result<SlaveConfig> {
         log::debug!("Configure slave {:?}", addr);
@@ -767,13 +742,37 @@ impl Master {
 */
 pub struct SlaveConfig<'m> {
     master: &'m Master,
-    index: SlaveConfigIdx,
+    index: u32,
 }
 
 impl<'m> SlaveConfig<'m> {
 	/// slave index
-    pub const fn index(&self) -> SlaveConfigIdx {
+    pub const fn index(&self) -> u32 {
         self.index
+    }
+    
+    /// retreive kernel-side informations about the current configuration
+    pub fn info(&self) -> Result<ConfigInfo> {
+        let mut data = ec::ec_ioctl_config_t::default();
+        data.config_index = self.index;
+        ioctl!(self.master, ec::ioctl::CONFIG, &mut data)?;
+        let id = SlaveId {
+            vendor_id: data.vendor_id,
+            product_code: data.product_code,
+        };
+        let slave_position = if data.slave_position == -1 {
+            None
+        } else {
+            Some(u16::from(data.slave_position as u16))
+        };
+        Ok(ConfigInfo {
+            alias: data.alias,
+            position: data.position,
+            id,
+            slave_position,
+            sdo_count: data.sdo_count,
+            idn_count: data.idn_count,
+        })
     }
 
     /**
@@ -1086,7 +1085,7 @@ impl<'m> SlaveConfig<'m> {
     /**
 		Read the number of CoE emergency overruns.
 
-		The overrun counter will be incremented when a CoE emergency message could not be stored in the ring buffer and had to be dropped. Call ecrt_slave_config_emerg_clear() to reset the counter.
+		The overrun counter will be incremented when a CoE emergency message could not be stored in the ring buffer and had to be dropped. Call [Self::clear_emerg] to reset the counter.
     */
     pub fn emerg_overruns(&mut self) -> Result<i32> {
         let mut data = ec::ec_ioctl_sc_emerg_t::default();
