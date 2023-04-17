@@ -106,7 +106,8 @@ impl Master {
     /**
 		Returns the domain's process data.
 
-		- In kernel context: If external memory was provided with `ecrt_domain_external_memory], the returned pointer will contain the address of that memory. Otherwise it will point to the internally allocated memory. In the latter case, this method may not be called before [Self::activate].
+
+		- In kernel context: If external memory was provided with `ecrt_domain_external_memory()`, the returned pointer will contain the address of that memory. Otherwise it will point to the internally allocated memory. In the latter case, this method may not be called before [Self::activate].
 		- In userspace context: This method has to be called after [Self::activate] to get the mapped domain process data memory.
     */
     pub fn domain_data(&mut self, index: usize) -> Result<&mut [u8]> {
@@ -162,7 +163,7 @@ impl Master {
     /**
 		Deactivates the master.
 
-		Removes the bus configuration. All objects created by [Self::create_domain], [Self::configure_slave], [Self::domain_data], `slave.create_sdo_request] and `slave.create_voe_handler] are freed, so pointers to them become invalid.
+		Removes the bus configuration. All objects created by [Self::create_domain], [Self::configure_slave], [Self::domain_data], [SlaveConfig::create_sdo_request] and [SlaveConfig::create_voe_handler] are freed, so pointers to them become invalid.
 
 		This method should not be called in realtime context. 
 	*/
@@ -1008,9 +1009,11 @@ impl<'m> SlaveConfig<'m> {
 
 		The idn parameter can be separated into several sections:
 
-		- Bit 15: Standard data (0) or Product data (1)
-		- Bit 14 - 12: Parameter set (0 - 7)
-		- Bit 11 - 0: Data block number (0 - 4095)
+		| idn section | content |
+		|-------------|---------|
+		| Bit 15      |  Standard data (0) or Product data (1)  |
+		| Bit 14 - 12 |  Parameter set (0 - 7)  |
+		| Bit 11 - 0  |  Data block number (0 - 4095)  |
 
 		Please note that the this function does not do any endianness correction. Multi-byte data have to be passed in EtherCAT endianness (little-endian).
 		
@@ -1060,7 +1063,11 @@ impl<'m> SlaveConfig<'m> {
 
 		A record consists of 8 bytes:
 
-		Byte 0-1: Error code (little endian) Byte 2: Error register Byte 3-7: Data
+		| bytes | content |
+		|------|---------|
+		| Byte 0-1 | Error code (little endian)  |
+		| Byte 2   | Error register |
+		| Byte 3-7 | Data |
 		
 		## Parameters
 		
@@ -1153,7 +1160,7 @@ impl<'m> Domain<'m> {
     /**
 		(Re-)queues all domain datagrams in the master's datagram queue.
 
-		Call this function to mark the domain's datagrams for exchanging at the next call of `master.send]. 
+		Call this function to mark the domain's datagrams for exchanging at the next call of [Master::send]. 
     */
     pub fn queue(&mut self) -> Result<()> {
         ioctl!(
