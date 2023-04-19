@@ -21,7 +21,21 @@ macro_rules! ioctl {
     }}
 }
 
-/// An EtherCAT master.
+/** Structure wrapping the ethercat master running in the OS kernel.
+
+	An ethercat network has one master and any number of slaves, communicating in a ring
+	The ethercat wiring electrically forms that ring whatever wiring is made, thanks to the duplex function of the ethernet layer.
+	
+	Each slave has:
+	
+	- a register providing standard informations about the slave (SII)
+	- a dictionnary of arbitrary objects than can be read or written (DO)
+	
+	dictionnary objects can be accessed in two ways:
+	
+	- service data: asynchronous direct read/write requests of object dictionnaries existing on slaves
+	- process data: synchronous periodic read/write buffers of object dictionnaries, the objects exchanged must be configured and the master must be activated to allow process data transmission.
+*/
 pub struct Master {
     file: File,
     map: Option<memmap::MmapMut>,
@@ -73,6 +87,247 @@ impl Master {
         ioctl!(master, ec::ioctl::MODULE, &mut module_info)?;
         Ok(module_info.master_count as usize)
     }
+    
+    /**
+		Obtains informations about the ethercat master (the kernel module)
+    */
+    pub fn get_info(&self) -> Result<MasterInfo> {
+        let mut data = ec::ec_ioctl_master_t::default();
+        ioctl!(self, ec::ioctl::MASTER, &mut data)?;
+        let ec::ec_ioctl_master_t {
+            slave_count,
+            devices,
+            scan_busy,
+            app_time,
+            ..
+        } = data;
+        let first_device = devices.get(0).ok_or_else(|| Error::NoDevices)?;
+        let link_up = first_device.link_state != 0;
+        let scan_busy = scan_busy != 0;
+        Ok(MasterInfo {
+            slave_count,
+            link_up,
+            scan_busy,
+            app_time,
+        })
+    }
+
+    /**
+		Obtains information about an ethercat slave.
+
+		Tries to find the slave with the given ring position. The obtained information is stored in a structure. No memory is allocated on the heap in this function.
+    */
+    pub fn get_slave_info(&self, position: u16) -> Result<SlaveInfo> {
+        let mut data = ec::ec_ioctl_slave_t::default();
+        data.position = u16::from(position);
+        ioctl!(self, ec::ioctl::SLAVE, &mut data)?;
+        let mut ports = [SlavePortInfo::default(); ec::EC_MAX_PORTS as usize];
+        for (i, port) in ports.iter_mut().enumerate().take(ec::EC_MAX_PORTS as usize) {
+            port.desc = match data.ports[i].desc {
+                ec::EC_PORT_NOT_IMPLEMENTED => SlavePortType::NotImplemented,
+                ec::EC_PORT_NOT_CONFIGURED => SlavePortType::NotConfigured,
+                ec::EC_PORT_EBUS => SlavePortType::EBus,
+                ec::EC_PORT_MII => SlavePortType::MII,
+                x => panic!("invalid port type {}", x),
+            };
+            port.link = SlavePortLink {
+                link_up: data.ports[i].link.link_up != 0,
+                loop_closed: data.ports[i].link.loop_closed != 0,
+                signal_detected: data.ports[i].link.signal_detected != 0,
+            };
+            port.receive_time = data.ports[i].receive_time;
+            port.next_slave = data.ports[i].next_slave;
+            port.delay_to_next_dc = data.ports[i].delay_to_next_dc;
+        }
+        Ok(SlaveInfo {
+            name: unsafe {
+                CStr::from_ptr(data.name.as_ptr())
+                    .to_string_lossy()
+                    .into_owned()
+            },
+            ring_pos: data.position,
+            id: SlaveId {
+                vendor_id: data.vendor_id,
+                product_code: data.product_code,
+            },
+            rev: SlaveRev {
+                revision_number: data.revision_number,
+                serial_number: data.serial_number,
+            },
+            alias: data.alias,
+            current_on_ebus: data.current_on_ebus,
+            al_state: AlState::try_from(data.al_state)
+                .map_err(|_| Error::InvalidAlState(data.al_state))?,
+            error_flag: data.error_flag,
+            sync_count: data.sync_count,
+            sdo_count: data.sdo_count,
+            ports,
+        })
+    }
+    
+    /** retreive informations about a given SDO */
+    pub fn get_sdo(&mut self, slave_pos: u16, sdo_pos: u16) -> Result<SdoInfo> {
+        let mut sdo = ec::ec_ioctl_slave_sdo_t::default();
+        sdo.slave_position = u16::from(slave_pos);
+        sdo.sdo_position = u16::from(sdo_pos);
+        ioctl!(self, ec::ioctl::SLAVE_SDO, &mut sdo)?;
+        #[cfg(feature = "sncn")]
+        {
+            Ok(SdoInfo {
+                pos: u16::from(sdo.sdo_position),
+                index: u16::from(sdo.sdo_index),
+                entry_count: u8::from(sdo.max_subindex),
+                object_code: Some(sdo.object_code),
+                name: c_array_to_string(sdo.name.as_ptr()),
+            })
+        }
+        #[cfg(not(feature = "sncn"))]
+        {
+            Ok(SdoInfo {
+                pos: u16::from(sdo.sdo_position),
+                index: u16::from(sdo.sdo_index),
+                entry_count: u8::from(sdo.max_subindex),
+                object_code: None,
+                name: convert::c_array_to_string(sdo.name.as_ptr()),
+            })
+        }
+    }
+
+    /** retreive informations about a given SDO's entry */
+    pub fn get_sdo_entry(
+        &mut self,
+        slave_pos: u16,
+        addr: SdoEntryAddr,
+    ) -> Result<SdoEntryInfo> {
+        let (spec, sub) = match addr {
+            SdoEntryAddr::ByPos(pos, sub) => ((pos as i32) * -1, sub),
+            SdoEntryAddr::ByIdx(index) => (index.index as i32, index.sub.unwrap()),
+        };
+        let mut entry = ec::ec_ioctl_slave_sdo_entry_t {
+			slave_position: slave_pos,
+			sdo_spec: spec,
+			sdo_entry_subindex: sub,
+			.. Default::default()
+			};
+        ioctl!(self, ec::ioctl::SLAVE_SDO_ENTRY, &mut entry)?;
+        Ok(SdoEntryInfo {
+            data_type: DataType::from_u16(entry.data_type).unwrap_or_else(|| {
+                let fallback = DataType::Raw;
+                log::warn!(
+                    "Slave {} / SDO {}: Unknown data type (type value: {:X}): use '{:?}' as fallback",
+                    u16::from(slave_pos),
+                    match addr {
+                        SdoEntryAddr::ByPos(pos, sub) => format!("{:?} {:?} ", pos, sub),
+                        SdoEntryAddr::ByIdx(index) =>
+                            format!("{:X}:{}", index.index, index.sub.unwrap()),
+                    },
+                    entry.data_type,
+                    fallback
+                );
+                fallback
+            }),
+            bit_len: entry.bit_length,
+            access: get_sdo_entry_access(entry.read_access, entry.write_access),
+            description: convert::c_array_to_string(entry.description.as_ptr()),
+        })
+    }
+
+    /**
+		Returns the proposed configuration of a slave's sync manager.
+		
+		Fills a given ec_sync_info_t structure with the attributes of a sync manager. The \a pdos field of the return value is left empty. Use [Self::get_pdo] to get the PDO information.
+		
+		Use [Self::get_sync_pdo] to check the sync manager's entries
+		
+		## Parameters
+		
+		- `slave_pos` - the slave position in the ethercat ring
+		- `sync_index` - the sync manager index on the slave, must be less than `get_slave_info().sync_count`
+    */
+    pub fn get_sync(&mut self, slave_pos: u16, sync_index: u8) -> Result<SmInfo> {
+        let mut sync = ec::ec_ioctl_slave_sync_t::default();
+        sync.slave_position = slave_pos;
+        sync.sync_index = sync_index as u32;
+        ioctl!(self, ec::ioctl::SLAVE_SYNC, &mut sync)?;
+        Ok(SmInfo {
+            index: sync.sync_index as u8,
+            start_addr: sync.physical_start_address,
+            default_size: sync.default_size,
+            control_register: sync.control_register,
+            enable: sync.enable == 1,
+            pdo_count: sync.pdo_count,
+        })
+    }
+
+    /**
+		Returns information about a currently assigned PDO.
+		
+		Use [Self::get_sync_pdo_entry] to check the PDO's entries
+		
+		## Parameters
+		
+		- `slave_pos` - the slave position in the ethercat ring
+		- `sync_index` - the sync manager index on the slave, must be less than `get_slave_info().sync_count`
+		- `pdo_position` - zero-based PDO position in the sync manager, must be less than `get_sync().pdo_count`
+    */
+    pub fn get_sync_pdo(
+        &mut self,
+        slave_pos: u16,
+        sync_index: u8,
+        pdo_position: u8,
+    ) -> Result<PdoInfo> {
+        let mut pdo = ec::ec_ioctl_slave_sync_pdo_t {
+			slave_position: slave_pos,
+			sync_index: sync_index as u32,
+			pdo_pos: pdo_position as u32,
+			.. Default::default()
+			};
+        ioctl!(self, ec::ioctl::SLAVE_SYNC_PDO, &mut pdo)?;
+        Ok(PdoInfo {
+            sm: pdo.sync_index as u8,
+            pos: pdo.pdo_pos as u8,
+            index: pdo.index,
+            entry_count: pdo.entry_count,
+            name: convert::c_array_to_string(pdo.name.as_ptr()),
+        })
+    }
+
+    /** 
+		Returns information about a currently mapped PDO entry
+		
+		## Parameters
+		
+		- `slave_pos` - the slave position in the ethercat ring
+		- `sync_index` - the sync manager index on the slave, must be less than `get_slave_info().sync_count`
+		- `pdo_position` - zero-based PDO position in the sync manager, must be less than `get_sync().pdo_count`
+		- `entry_pos` - Zero-based entry position in the PDO, must be less than `get_sync_pdo().entry_count`
+	*/
+    pub fn get_sync_pdo_entry(
+        &mut self,
+        slave_pos: u16,
+        sync_index: u8,
+        pdo_pos: u8,
+        entry_pos: u8,
+    ) -> Result<PdoEntryInfo> {
+        let mut entry = ec::ec_ioctl_slave_sync_pdo_entry_t {
+			slave_position: slave_pos,
+			sync_index: sync_index as u32,
+			pdo_pos: pdo_pos as u32,
+			entry_pos: entry_pos as u32,
+			.. Default::default()
+			};
+        ioctl!(self, ec::ioctl::SLAVE_SYNC_PDO_ENTRY, &mut entry)?;
+        Ok(PdoEntryInfo {
+            pos: entry.pdo_pos as u8,
+            entry: Sdo {
+                index: entry.index,
+                sub: SdoItem::Sub(entry.subindex),
+            },
+            bit_len: entry.bit_length,
+            name: convert::c_array_to_string(entry.name.as_ptr()),
+        })
+    }
+
 
     /**
 		Reserves an EtherCAT master for realtime operation.
@@ -257,82 +512,6 @@ impl Master {
         })
     }
 
-    /**
-		Obtains master information. 
-    */
-    pub fn get_info(&self) -> Result<MasterInfo> {
-        let mut data = ec::ec_ioctl_master_t::default();
-        ioctl!(self, ec::ioctl::MASTER, &mut data)?;
-        let ec::ec_ioctl_master_t {
-            slave_count,
-            devices,
-            scan_busy,
-            app_time,
-            ..
-        } = data;
-        let first_device = devices.get(0).ok_or_else(|| Error::NoDevices)?;
-        let link_up = first_device.link_state != 0;
-        let scan_busy = scan_busy != 0;
-        Ok(MasterInfo {
-            slave_count,
-            link_up,
-            scan_busy,
-            app_time,
-        })
-    }
-
-    /**
-		Obtains slave information.
-
-		Tries to find the slave with the given ring position. The obtained information is stored in a structure. No memory is allocated on the heap in this function.
-    */
-    pub fn get_slave_info(&self, position: u16) -> Result<SlaveInfo> {
-        let mut data = ec::ec_ioctl_slave_t::default();
-        data.position = u16::from(position);
-        ioctl!(self, ec::ioctl::SLAVE, &mut data)?;
-        let mut ports = [SlavePortInfo::default(); ec::EC_MAX_PORTS as usize];
-        for (i, port) in ports.iter_mut().enumerate().take(ec::EC_MAX_PORTS as usize) {
-            port.desc = match data.ports[i].desc {
-                ec::EC_PORT_NOT_IMPLEMENTED => SlavePortType::NotImplemented,
-                ec::EC_PORT_NOT_CONFIGURED => SlavePortType::NotConfigured,
-                ec::EC_PORT_EBUS => SlavePortType::EBus,
-                ec::EC_PORT_MII => SlavePortType::MII,
-                x => panic!("invalid port type {}", x),
-            };
-            port.link = SlavePortLink {
-                link_up: data.ports[i].link.link_up != 0,
-                loop_closed: data.ports[i].link.loop_closed != 0,
-                signal_detected: data.ports[i].link.signal_detected != 0,
-            };
-            port.receive_time = data.ports[i].receive_time;
-            port.next_slave = data.ports[i].next_slave;
-            port.delay_to_next_dc = data.ports[i].delay_to_next_dc;
-        }
-        Ok(SlaveInfo {
-            name: unsafe {
-                CStr::from_ptr(data.name.as_ptr())
-                    .to_string_lossy()
-                    .into_owned()
-            },
-            ring_pos: data.position,
-            id: SlaveId {
-                vendor_id: data.vendor_id,
-                product_code: data.product_code,
-            },
-            rev: SlaveRev {
-                revision_number: data.revision_number,
-                serial_number: data.serial_number,
-            },
-            alias: data.alias,
-            current_on_ebus: data.current_on_ebus,
-            al_state: AlState::try_from(data.al_state)
-                .map_err(|_| Error::InvalidAlState(data.al_state))?,
-            error_flag: data.error_flag,
-            sync_count: data.sync_count,
-            sdo_count: data.sdo_count,
-            ports,
-        })
-    }
 
     /**
 		Obtains a slave configuration.
@@ -363,73 +542,6 @@ impl Master {
         Ok(SlaveConfig {
             master: self,
             index: data.config_index,
-        })
-    }
-
-    /** retreive informations about a given SDO */
-    pub fn get_sdo(&mut self, slave_pos: u16, sdo_pos: u16) -> Result<SdoInfo> {
-        let mut sdo = ec::ec_ioctl_slave_sdo_t::default();
-        sdo.slave_position = u16::from(slave_pos);
-        sdo.sdo_position = u16::from(sdo_pos);
-        ioctl!(self, ec::ioctl::SLAVE_SDO, &mut sdo)?;
-        #[cfg(feature = "sncn")]
-        {
-            Ok(SdoInfo {
-                pos: u16::from(sdo.sdo_position),
-                index: u16::from(sdo.sdo_index),
-                entry_count: u8::from(sdo.max_subindex),
-                object_code: Some(sdo.object_code),
-                name: c_array_to_string(sdo.name.as_ptr()),
-            })
-        }
-        #[cfg(not(feature = "sncn"))]
-        {
-            Ok(SdoInfo {
-                pos: u16::from(sdo.sdo_position),
-                index: u16::from(sdo.sdo_index),
-                entry_count: u8::from(sdo.max_subindex),
-                object_code: None,
-                name: convert::c_array_to_string(sdo.name.as_ptr()),
-            })
-        }
-    }
-
-    /** retreive informations about a given SDO's entry */
-    pub fn get_sdo_entry(
-        &mut self,
-        slave_pos: u16,
-        addr: SdoEntryAddr,
-    ) -> Result<SdoEntryInfo> {
-        let (spec, sub) = match addr {
-            SdoEntryAddr::ByPos(pos, sub) => ((pos as i32) * -1, sub),
-            SdoEntryAddr::ByIdx(index) => (index.index as i32, index.sub.unwrap()),
-        };
-        let mut entry = ec::ec_ioctl_slave_sdo_entry_t {
-			slave_position: slave_pos,
-			sdo_spec: spec,
-			sdo_entry_subindex: sub,
-			.. Default::default()
-			};
-        ioctl!(self, ec::ioctl::SLAVE_SDO_ENTRY, &mut entry)?;
-        Ok(SdoEntryInfo {
-            data_type: DataType::from_u16(entry.data_type).unwrap_or_else(|| {
-                let fallback = DataType::Raw;
-                log::warn!(
-                    "Slave {} / SDO {}: Unknown data type (type value: {:X}): use '{:?}' as fallback",
-                    u16::from(slave_pos),
-                    match addr {
-                        SdoEntryAddr::ByPos(pos, sub) => format!("{:?} {:?} ", pos, sub),
-                        SdoEntryAddr::ByIdx(index) =>
-                            format!("{:X}:{}", index.index, index.sub.unwrap()),
-                    },
-                    entry.data_type,
-                    fallback
-                );
-                fallback
-            }),
-            bit_len: entry.bit_length,
-            access: get_sdo_entry_access(entry.read_access, entry.write_access),
-            description: convert::c_array_to_string(entry.description.as_ptr()),
         })
     }
 
@@ -504,95 +616,6 @@ impl Master {
 
         ioctl!(self, ec::ioctl::SLAVE_SDO_UPLOAD, &mut data)?;
         Ok(&mut target[..data.data_size as usize])
-    }
-
-    /**
-		Returns information about a currently assigned PDO.
-		
-		Use [Self::get_pdo_entry] to get the PDO entry information.
-		
-		## Parameters
-		
-		- `slave_pos` - the slave position
-		- `sync_index` - the sync manager index, must be less than `EC_MAX_SYNC_MANAGERS`
-		- `pdo_position` - zero-based PDO position
-    */
-    pub fn get_pdo(
-        &mut self,
-        slave_pos: u16,
-        sync_index: u8,
-        pdo_position: u8,
-    ) -> Result<PdoInfo> {
-        let mut pdo = ec::ec_ioctl_slave_sync_pdo_t {
-			slave_position: slave_pos,
-			sync_index: sync_index as u32,
-			pdo_pos: pdo_position as u32,
-			.. Default::default()
-			};
-        ioctl!(self, ec::ioctl::SLAVE_SYNC_PDO, &mut pdo)?;
-        Ok(PdoInfo {
-            sm: pdo.sync_index as u8,
-            pos: pdo.pdo_pos as u8,
-            index: pdo.index,
-            entry_count: pdo.entry_count,
-            name: convert::c_array_to_string(pdo.name.as_ptr()),
-        })
-    }
-
-    /** 
-		Returns information about a currently mapped PDO entry
-		
-		## Parameters
-		
-		- `slave_pos` - the slave position
-		- `sync_index` - the sync manager index, must be less than `EC_MAX_SYNC_MANAGERS`
-		- `pdo_position` - Zero-based PDO position
-		- `entry_pos` - Zero-based PDO entry position
-	*/
-    pub fn get_pdo_entry(
-        &mut self,
-        slave_pos: u16,
-        sync_index: u8,
-        pdo_pos: u8,
-        entry_pos: u8,
-    ) -> Result<PdoEntryInfo> {
-        let mut entry = ec::ec_ioctl_slave_sync_pdo_entry_t {
-			slave_position: slave_pos,
-			sync_index: sync_index as u32,
-			pdo_pos: pdo_pos as u32,
-			entry_pos: entry_pos as u32,
-			.. Default::default()
-			};
-        ioctl!(self, ec::ioctl::SLAVE_SYNC_PDO_ENTRY, &mut entry)?;
-        Ok(PdoEntryInfo {
-            pos: entry.pdo_pos as u8,
-            entry: Sdo {
-                index: entry.index,
-                sub: SdoItem::Sub(entry.subindex),
-            },
-            bit_len: entry.bit_length,
-            name: convert::c_array_to_string(entry.name.as_ptr()),
-        })
-    }
-
-    /**
-		Returns the proposed configuration of a slave's sync manager.
-		
-		Fills a given ec_sync_info_t structure with the attributes of a sync manager. The \a pdos field of the return value is left empty. Use [Self::get_pdo] to get the PDO information.
-    */
-    pub fn get_sync(&mut self, slave_pos: u16, sm: u8) -> Result<SmInfo> {
-        let mut sync = ec::ec_ioctl_slave_sync_t::default();
-        sync.slave_position = slave_pos;
-        sync.sync_index = sm as u32;
-        ioctl!(self, ec::ioctl::SLAVE_SYNC, &mut sync)?;
-        Ok(SmInfo {
-            index: sync.sync_index as u8,
-            start_addr: sync.physical_start_address,
-            default_size: sync.default_size,
-            control_register: sync.control_register,
-            enable: sync.enable == 1,
-            pdo_count: sync.pdo_count,
-        })
     }
 
     /**
@@ -849,7 +872,7 @@ impl<'m> SlaveConfig<'m> {
         }
         let mut data = ec::ec_ioctl_config_t::default();
         data.config_index = self.index;
-        let ix = u8::from(cfg.index) as usize;
+        let ix = cfg.index as usize;
         data.syncs[ix].dir = cfg.direction as u32;
         data.syncs[ix].watchdog_mode = cfg.watchdog_mode as u32;
         data.syncs[ix].config_this = 1;
