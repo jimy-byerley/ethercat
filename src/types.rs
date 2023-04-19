@@ -204,10 +204,18 @@ pub enum SyncDirection {
     Input,
 }
 
+/** 
+	Watchdog mode for sync manager configuration. 
+	
+	Used to specify, if a sync manager's watchdog is to be enabled. 
+*/
 #[derive(Debug, Clone, Copy)]
 pub enum WatchdogMode {
+	/// Whether it is enabled or not depends n the default setting of the sync manager. 
     Default,
+	/// Enable the watchdog. 
     Enable,
+    /// Disable the watchdog. 
     Disable,
 }
 

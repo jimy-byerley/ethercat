@@ -54,8 +54,12 @@ use ethercat_sys as ec;
 mod convert;
 mod master;
 mod types;
+mod config;
+mod field;
 
 pub use self::{
     master::{Domain, Master, MasterAccess, SlaveConfig},
     types::*,
+    config::*,
+    field::*,
 };
