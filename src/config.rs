@@ -55,14 +55,16 @@ impl<'a> MasterConfigurator<'a> {
 		match direction {
 			SyncDirection::Output => entry.outputs.push(sdo.clone()),
 			SyncDirection::Input => entry.inputs.push(sdo.clone()),
+			SyncDirection::Invalid => unimplemented!("sync direction must be defined for an SDO requirement"),
 		}
 	}
 			
 	/// find a way to map all the previously required SDOs to PDOs and PDOs to sync managers
 	pub fn resolve(&mut self, fixed: &[u16], configurable: &[u16], syncs: &[u8]) -> Result<()> {
-		for (slave, entries) in self.entries {
+		for (&slave, entries) in &self.entries {
 			// determine which pdos will be used and which sync managers they will be assigned to
-			let mapping = Self::solve(self.inventory.clone(), configurable, &entries.outputs)?;
+			let mapping: MappingInventory = todo!();
+// 			let mapping = Self::solve(self.inventory.clone(), configurable, &entries.outputs)?;
 			
 			// operate mapping on the slaves
 			let mut config = self.master.configure_slave(SlaveAddr::ByPos(slave), self.master.get_slave_info(slave)?.id)?;
@@ -130,7 +132,8 @@ impl<'a> MasterConfigurator<'a> {
 	fn solve(mapping: MappingInventory, configurable: &[u16], entries: &[Sdo]) -> core::result::Result<MappingInventory, MappingError> {
 		// configurable pdos, we will use them when fixed pdos are not fitted
 		// we will start by trying to use fixed PDOs and then complete with configurable ones
-		let mut configurable = configurable.iter().cloned().collect::<HashSet<u16>>();
+		let configurable = configurable.iter().cloned().collect::<HashSet<u16>>();
+		let mut mapping = mapping;
 		
 		// select pdos on their exclusive coverage
 		let mut used = HashSet::<u16>::new();
@@ -151,7 +154,10 @@ impl<'a> MasterConfigurator<'a> {
 		// assign remaining items to configurable pdos
 		let mut it = reached.iter().filter_map(|(pdo, done)|  if ! done {Some(pdo)} else {None});
 		'assign: for pdo in configurable.iter() {
-			for item in mapping.pdos[pdo].iter_mut() {
+			for item in mapping.pdos
+							.get_mut(pdo)
+							.unwrap()
+							.iter_mut() {
 				match it.next() {
 					Some(sdo) => {used.insert(*pdo); *item = *sdo},
 					None => break 'assign,

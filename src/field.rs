@@ -1,10 +1,11 @@
 use std::{
 	marker::PhantomData,
 	convert::TryInto,
+	fmt,
 	};
 
 /// locate some data in a datagram, which must be extracted to type `T` to be processed in rust
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Field<T: DType> {
 	dtype: PhantomData<T>,
 	/// start byte index of the object
@@ -23,6 +24,15 @@ impl<T: DType> Field<T> {
 	pub fn get(&self, data: &[u8]) -> T       {T::from_dfield(self, data)}
 	/// dump the given value to the place pointed by the field in the byte array
 	pub fn set(&self, data: &mut [u8], value: T)   {value.to_dfield(self, data)}
+}
+impl<T: DType> fmt::Debug for Field<T> {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("Field")
+			.field("byte", &self.byte)
+			.field("bit", &self.bit)
+			.field("bitlen", &self.bitlen)
+			.finish()
+	}
 }
 pub trait DType: Sized {
 	fn id() -> TypeId;
